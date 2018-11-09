@@ -1,0 +1,151 @@
+#!/bin/bash
+#
+# Script Name: check_greplog
+# Date:        2016-07-19
+#
+# This is a nagios compatiable script that will check to see how frequent
+# a message shows up in a log file.
+#
+# Notes:
+# The date format is critical. It must match what what the format of the
+# date used in the log file, for example, to match a /var/log/messages
+# entry, use this parameter:
+#
+#   -d "^%b %d %H:%M"
+#
+# Known issues:
+#  when a file is rotated, a false OK state can be reported.
+#  if dateformat doesn't match interval, odd results can happen.
+#
+# Authors:
+#    czirzow@gmail.com
+#
+
+
+STATE_OK=0
+STATE_WARNING=1
+STATE_CRITICAL=2
+STATE_UNKNOWN=3
+
+print_usage() {
+  cat <<EOH
+$1
+  Usage: $0 -w warning -c critical -l logfile -d dateformat -g "text to find"
+
+    -h    what you are seeing now
+    -w    the warning level            default: $warning
+    -c    the critical level           default: $critical
+    -t    look for this many intervals default: $timespan
+    -i    the interval of errors       default: $interval (dependent of -d option)
+    -d    date format to look for      [required]
+    -l    log file to watch            [required]
+    -g    grep this content            [required]
+
+EOH
+exit
+}
+
+# Default vars:
+critical="5"
+warning="2"
+timespan="10"
+interval="min"  # this is date's interval
+
+# Required vars:
+dateformat="" # ensure date format matches interval
+logfile=""
+greptext=""
+
+# lets see what was passed.
+while test -n "$1"; do
+  case "$1" in
+    -h)
+      print_usage
+      exit
+      ;;
+    -c)
+      critical=$2
+      shift
+      ;;
+    -w)
+      warning=$2
+      shift
+      ;;
+    -i)
+      interval=$2
+      shift
+      ;;
+    -l)
+      logfile=$2
+      shift
+      ;;
+    -d)
+      dateformat=$2
+      shift
+      ;;
+    -g)
+      greptext=$2
+      shift
+      ;;
+  esac
+  shift
+done
+
+# check required parameters.
+if [ -z "$logfile" ]; then
+  print_usage "You need to supply a logfile to watch."
+fi
+if [ -z "$greptext" ]; then
+  print_usage "You need to supply what to grep for."
+fi
+if [ -z "$dateformat" ]; then
+  print_usage "You need to supply a date format. (see: man date)"
+fi
+
+
+# Ok... Lets start grep'n
+#
+# Limit our dataset down to only the messages we want
+matched=`grep -i "\($greptext\)" $logfile`
+
+if [ -z "$matched" ]; then
+  # no matches found. this is considered really good success!
+  echo "OK - Things look good for ($greptext) in: $logfile"
+  exit $STATE_OK
+fi
+
+#--- bash string magic ---
+match_daterange=""
+# Otherwise there was a match, lets see how soon it was.
+# and build up a date range to egrep for.
+for (( i = $timespan; i >= 0; --i)); do
+  timespan=$i
+  daterange=$(date +"$dateformat" --date="-$timespan $interval")
+  match_daterange="$match_daterange|$daterange"
+done
+# fancy bash to remove the first | in the string
+match_daterange=${match_daterange#"|"}
+#--- /bash string magic ---
+
+# find how many matches we have in the date range for what we are looking for
+total_matches=$(echo "$matched" | egrep "($match_daterange)" | wc -l)
+
+# And the winner is?
+if [ "$total_matches" -lt "$warning" ]; then
+  echo "OK - $total_matches recovering for ($greptext) in: $logfile"
+  exit $STATE_OK
+
+elif [[ ( "$total_matches" -ge "$warning" ) && ( "$total_matches" -lt "$critical" ) ]]; then
+  echo "WARNING - $total_matches is becomming a problem for ($greptext) in: $logfile"
+  exit $STATE_WARNING
+
+elif [ "$total_matches" -ge "$critical" ]; then
+  echo "CRITICAL - $total_matches is a problem for ($greptext) in: $logfile"
+  exit $STATE_CRITICAL
+
+fi
+
+# if we got here, it is very odd.
+exit $STATE_UNKNOWN
+
+
